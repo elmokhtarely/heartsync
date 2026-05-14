@@ -1,0 +1,104 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Entity Validations ---
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['id', 'display_name', 'invite_code']) 
+        && data.keys().size() >= 3 
+        && data.id == request.auth.uid 
+        && data.display_name is string && data.display_name.size() > 0 && data.display_name.size() <= 50
+        && data.invite_code is string && data.invite_code.size() == 8
+        && (!('couple_id' in data) || data.couple_id == null || (data.couple_id is string && data.couple_id.size() <= 128))
+        && (!('last_active_at' in data) || data.last_active_at == request.time || data.last_active_at == null);
+    }
+
+    function isValidCouple(data) {
+      return data.keys().hasAll(['id', 'partner1_id', 'total_signals', 'daily_count', 'created_at'])
+        && data.partner1_id is string
+        && data.total_signals is int && data.total_signals >= 0
+        && data.daily_count is int && data.daily_count >= 0
+        && data.created_at == request.time;
+    }
+
+    function isValidSignal(data) {
+      return data.keys().hasAll(['sent_by', 'sent_at', 'type', 'members'])
+        && data.keys().size() == 4
+        && data.sent_by == request.auth.uid
+        && data.sent_at == request.time
+        && data.type == 'THINK'
+        && data.members is list && data.members.size() >= 1 && data.members.hasAny([request.auth.uid]);
+    }
+
+    // --- Collection Rules ---
+
+    match /profiles/{userId} {
+      allow get: if isSignedIn();
+      allow list: if false; // Profiles are looked up by ID or invite code (which requires a custom query if implemented, but here we usually get by ID)
+      
+      allow create: if isVerified() && userId == request.auth.uid && isValidUserProfile(incoming());
+      
+      allow update: if isVerified() && userId == request.auth.uid && isValidUserProfile(incoming()) && (
+        // Action: Join Couple (update couple_id)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['couple_id']) && existing().couple_id == null) ||
+        // Action: Update Profile Info
+        (incoming().diff(existing()).affectedKeys().hasOnly(['display_name'])) ||
+        // Action: Heartbeat (update last_active_at)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['last_active_at']))
+      );
+    }
+
+    match /couples/{coupleId} {
+      allow get: if isVerified() && (existing().partner1_id == request.auth.uid || existing().partner2_id == request.auth.uid);
+      allow list: if isVerified() && (resource.data.partner1_id == request.auth.uid || resource.data.partner2_id == request.auth.uid);
+
+      allow create: if isVerified() && isValidCouple(incoming()) && incoming().partner1_id == request.auth.uid;
+      
+      allow update: if isVerified() && (existing().partner1_id == request.auth.uid || (existing().partner2_id != null && existing().partner2_id == request.auth.uid)) && (
+        // Action: Join Couple (set partner2)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['partner2_id']) && existing().partner2_id == null && incoming().partner2_id == request.auth.uid) ||
+        // Action: Send Signal (increment counts)
+        (incoming().diff(existing()).affectedKeys().hasAny(['total_signals', 'daily_count']) && incoming().partner1_id == existing().partner1_id && incoming().partner2_id == existing().partner2_id)
+      );
+    }
+
+    match /couples/{coupleId}/signals/{signalId} {
+      // Must be a member of the couple
+      function isCoupleMember() {
+        return get(/databases/$(database)/documents/couples/$(coupleId)).data.partner1_id == request.auth.uid 
+            || get(/databases/$(database)/documents/couples/$(coupleId)).data.partner2_id == request.auth.uid;
+      }
+
+      allow list: if isVerified() && isCoupleMember();
+      allow get: if isVerified() && isCoupleMember();
+      allow create: if isVerified() && isCoupleMember() && isValidSignal(incoming());
+      allow update, delete: if false; // Signals are immutable
+    }
+  }
+}

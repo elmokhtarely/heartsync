@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile information and relationship status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique user ID." },
+        "display_name": { "type": "string", "description": "The name shown to others." },
+        "invite_code": { "type": "string", "description": "Unique code used to connect with a partner." },
+        "couple_id": { "type": "string", "description": "The ID of the couple record, if connected." },
+        "last_active_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "display_name", "invite_code"]
+    },
+    "Couple": {
+      "title": "Couple",
+      "description": "Represents a pair of connected users.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "partner1_id": { "type": "string" },
+        "partner2_id": { "type": "string" },
+        "total_signals": { "type": "integer" },
+        "daily_count": { "type": "integer" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "last_daily_reset": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "partner1_id", "total_signals", "daily_count", "created_at"]
+    },
+    "Signal": {
+      "title": "Signal",
+      "description": "An emotional signal sent between partners.",
+      "type": "object",
+      "properties": {
+        "sent_by": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "type": { "type": "string", "enum": ["THINK"] },
+        "members": { "type": "array"}
+      },
+      "required": ["sent_by", "sent_at", "type", "members"]
+    }
+  },
+  "firestore": {
+    "/profiles/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile data."
+    },
+    "/couples/{coupleId}": {
+      "schema": "Couple",
+      "description": "Relationship data."
+    },
+    "/couples/{coupleId}/signals/{signalId}": {
+      "schema": "Signal",
+      "description": "Signals sent within a couple."
+    }
+  }
+}
