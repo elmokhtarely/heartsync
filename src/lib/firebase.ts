@@ -22,7 +22,6 @@ import {
   getDocs,
   orderBy,
   limit,
-  type DocumentData,
   type QueryConstraint,
 } from 'firebase/firestore';
 
@@ -47,8 +46,8 @@ export interface Profile {
   id: string;
   email: string;
   display_name: string;
-  couple_id?: string;
-  invite_code?: string;
+  couple_id?: string | null;
+  invite_code?: string | null;
   avatar_url?: string;
   bio?: string;
   created_at: string;
@@ -64,12 +63,17 @@ export interface UpdateProfileData {
   is_online?: boolean;
 }
 
-// ========== FONCTIONS PROFIL DE BASE ==========
+export interface Couple {
+  id: string;
+  invite_code: string;
+  created_at: string;
+  users: string[];
+}
+
+// ========== FONCTIONS PROFIL ==========
 
 /**
  * Récupère le profil d'un utilisateur
- * @param userId - ID de l'utilisateur
- * @returns Le profil ou null s'il n'existe pas
  */
 export const getProfile = async (userId: string): Promise<Profile | null> => {
   try {
@@ -88,8 +92,6 @@ export const getProfile = async (userId: string): Promise<Profile | null> => {
 
 /**
  * Crée ou met à jour un profil complet
- * @param userId - ID de l'utilisateur
- * @param data - Données du profil
  */
 export const setProfile = async (userId: string, data: Partial<Profile>): Promise<void> => {
   try {
@@ -103,8 +105,6 @@ export const setProfile = async (userId: string, data: Partial<Profile>): Promis
 
 /**
  * Met à jour partiellement un profil
- * @param userId - ID de l'utilisateur
- * @param data - Champs à modifier
  */
 export const updateProfile = async (userId: string, data: UpdateProfileData): Promise<void> => {
   try {
@@ -121,7 +121,6 @@ export const updateProfile = async (userId: string, data: UpdateProfileData): Pr
 
 /**
  * Supprime un profil
- * @param userId - ID de l'utilisateur
  */
 export const deleteProfile = async (userId: string): Promise<void> => {
   try {
@@ -133,11 +132,8 @@ export const deleteProfile = async (userId: string): Promise<void> => {
   }
 };
 
-// ========== FONCTIONS AVANCÉES ==========
-
 /**
  * Met à jour la date de dernière activité
- * @param userId - ID de l'utilisateur
  */
 export const updateLastActive = async (userId: string): Promise<void> => {
   try {
@@ -152,8 +148,6 @@ export const updateLastActive = async (userId: string): Promise<void> => {
 
 /**
  * Met à jour le statut en ligne
- * @param userId - ID de l'utilisateur
- * @param isOnline - Statut en ligne
  */
 export const updateOnlineStatus = async (userId: string, isOnline: boolean): Promise<void> => {
   try {
@@ -169,8 +163,6 @@ export const updateOnlineStatus = async (userId: string, isOnline: boolean): Pro
 
 /**
  * Recherche des profils par nom
- * @param searchTerm - Terme de recherche
- * @param maxResults - Nombre maximum de résultats
  */
 export const searchProfiles = async (searchTerm: string, maxResults: number = 20): Promise<Profile[]> => {
   try {
@@ -200,7 +192,6 @@ export const searchProfiles = async (searchTerm: string, maxResults: number = 20
 
 /**
  * Récupère les profils d'un couple
- * @param coupleId - ID du couple
  */
 export const getCoupleProfiles = async (coupleId: string): Promise<Profile[]> => {
   try {
@@ -222,7 +213,6 @@ export const getCoupleProfiles = async (coupleId: string): Promise<Profile[]> =>
 
 /**
  * Vérifie si un profil existe
- * @param userId - ID de l'utilisateur
  */
 export const profileExists = async (userId: string): Promise<boolean> => {
   try {
@@ -237,7 +227,6 @@ export const profileExists = async (userId: string): Promise<boolean> => {
 
 /**
  * Crée un profil pour un nouvel utilisateur avec les données Google
- * @param user - Utilisateur Firebase Auth
  */
 export const createProfileFromGoogle = async (user: User): Promise<Profile> => {
   const newProfile: Profile = {
@@ -254,16 +243,173 @@ export const createProfileFromGoogle = async (user: User): Promise<Profile> => {
   return newProfile;
 };
 
+// ========== FONCTIONS COUPLE ==========
+
+/**
+ * Génère un code d'invitation aléatoire
+ */
+const generateInviteCode = (): string => {
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for (let i = 0; i < 8; i++) {
+    code += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return code;
+};
+
+/**
+ * Cherche un couple par code d'invitation
+ */
+export const findCoupleByInviteCode = async (inviteCode: string): Promise<Couple | null> => {
+  try {
+    const couplesRef = collection(db, 'couples');
+    const q = query(couplesRef, where('invite_code', '==', inviteCode.toUpperCase()));
+    const querySnapshot = await getDocs(q);
+    
+    if (!querySnapshot.empty) {
+      const doc = querySnapshot.docs[0];
+      return { id: doc.id, ...doc.data() } as Couple;
+    }
+    return null;
+  } catch (error) {
+    console.error("Erreur lors de la recherche du couple:", error);
+    return null;
+  }
+};
+
+/**
+ * Crée un nouveau couple et un code d'invitation
+ */
+export const createCouple = async (userId: string): Promise<string> => {
+  try {
+    const inviteCode = generateInviteCode();
+    const coupleId = `couple_${Date.now()}`;
+    
+    const coupleRef = doc(db, 'couples', coupleId);
+    await setDoc(coupleRef, {
+      id: coupleId,
+      invite_code: inviteCode,
+      created_at: new Date().toISOString(),
+      users: [userId]
+    });
+    
+    const profileRef = doc(db, 'profiles', userId);
+    await updateDoc(profileRef, {
+      couple_id: coupleId,
+      invite_code: inviteCode
+    });
+    
+    return inviteCode;
+  } catch (error) {
+    console.error("Erreur lors de la création du couple:", error);
+    throw error;
+  }
+};
+
+/**
+ * Rejoint un couple avec un code d'invitation
+ */
+export const joinCouple = async (userId: string, inviteCode: string): Promise<{ success: boolean; message: string }> => {
+  try {
+    const couple = await findCoupleByInviteCode(inviteCode);
+    
+    if (!couple) {
+      return { success: false, message: "Code d'invitation invalide" };
+    }
+    
+    // Vérifier si l'utilisateur est déjà dans un couple
+    const userProfile = await getProfile(userId);
+    if (userProfile?.couple_id) {
+      return { success: false, message: "Tu es déjà dans un couple" };
+    }
+    
+    const coupleRef = doc(db, 'couples', couple.id);
+    const updatedUsers = [...couple.users, userId];
+    await updateDoc(coupleRef, { users: updatedUsers });
+    
+    const profileRef = doc(db, 'profiles', userId);
+    await updateDoc(profileRef, { 
+      couple_id: couple.id,
+      invite_code: inviteCode.toUpperCase()
+    });
+    
+    return { success: true, message: "Tu as rejoint le couple !" };
+  } catch (error) {
+    console.error("Erreur lors du join:", error);
+    return { success: false, message: "Erreur lors du join" };
+  }
+};
+
+/**
+ * Quitte un couple
+ */
+export const leaveCouple = async (userId: string): Promise<{ success: boolean; message: string }> => {
+  try {
+    const profile = await getProfile(userId);
+    if (!profile?.couple_id) {
+      return { success: false, message: "Tu n'es dans aucun couple" };
+    }
+    
+    const coupleRef = doc(db, 'couples', profile.couple_id);
+    const coupleSnap = await getDoc(coupleRef);
+    
+    if (coupleSnap.exists()) {
+      const coupleData = coupleSnap.data();
+      const updatedUsers = coupleData.users.filter((id: string) => id !== userId);
+      
+      if (updatedUsers.length === 0) {
+        await deleteDoc(coupleRef);
+      } else {
+        await updateDoc(coupleRef, { users: updatedUsers });
+      }
+    }
+    
+    const profileRef = doc(db, 'profiles', userId);
+    await updateDoc(profileRef, {
+      couple_id: null,
+      invite_code: null
+    });
+    
+    return { success: true, message: "Tu as quitté le couple" };
+  } catch (error) {
+    console.error("Erreur lors du leave:", error);
+    return { success: false, message: "Erreur lors du départ" };
+  }
+};
+
+/**
+ * Récupère le couple d'un utilisateur
+ */
+export const getUserCouple = async (userId: string): Promise<Couple | null> => {
+  try {
+    const profile = await getProfile(userId);
+    if (!profile?.couple_id) return null;
+    
+    const coupleRef = doc(db, 'couples', profile.couple_id);
+    const coupleSnap = await getDoc(coupleRef);
+    
+    if (coupleSnap.exists()) {
+      return { id: coupleSnap.id, ...coupleSnap.data() } as Couple;
+    }
+    return null;
+  } catch (error) {
+    console.error("Erreur lors de la récupération du couple:", error);
+    return null;
+  }
+};
+
 /**
  * Supprime complètement le compte utilisateur (Auth + Firestore)
- * @param userId - ID de l'utilisateur
  */
 export const deleteUserAccount = async (userId: string): Promise<void> => {
   try {
-    // Supprimer le profil Firestore
+    const profile = await getProfile(userId);
+    if (profile?.couple_id) {
+      await leaveCouple(userId);
+    }
+    
     await deleteProfile(userId);
     
-    // Supprimer l'authentification (nécessite une fonction Cloud ou ré-authentification)
     const user = auth.currentUser;
     if (user) {
       await user.delete();
